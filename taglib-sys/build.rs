@@ -1,65 +1,68 @@
 #[cfg(feature = "pkg-config")]
 extern crate pkg_config;
 
-extern crate bindgen;
-
+use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 
+//是否静态编译，默认否
+// TAGLIB_STATIC=1
+// 多个用半角冒号分隔，示例
+// TAGLIB_LIB_DIRS=/others/lib:/opt/usr/local/lib
+// 多个用半角冒号分隔，标准的`tag_c`和`tag`无需指定，示例
+// TAGLIB_EXTRA_LIBS=zlib
 fn main() {
     if !build_pkgconfig() {
-        build_fixed();
+        build_env();
     }
 }
 
-fn build_fixed() {
-    let headers_path = PathBuf::from("/opt/usr/local/include/taglib")
-        // Canonicalize the path as `rustc-link-search` requires an absolute
-        // path.
-        .canonicalize()
-        .expect("cannot canonicalize path");
-    let headers_path = headers_path.join("tag_c.h");
-    let headers_path_str = headers_path.to_str().expect("Path is not a valid string");
+fn build_env() {
+    let lib_dirs = get_lib_dirs();
+    for dir in &lib_dirs {
+        if !dir.exists() {
+            panic!("library directory does not exist: {}", dir.to_string_lossy());
+        }
+        println!("cargo:rustc-link-search=native={}", dir.to_string_lossy());
+    }
 
-    let libdir_path = PathBuf::from("/opt/usr/local/lib")
-        // Canonicalize the path as `rustc-link-search` requires an absolute
-        // path.
-        .canonicalize()
-        .expect("cannot canonicalize path");
-    // Tell cargo to look for shared libraries in the specified directory
-    println!("cargo:rustc-link-search={}", libdir_path.to_str().unwrap());
+    let kind = get_link_mode();
+    let extra_libs = get_extra_libs();
+    for lib in &extra_libs {
+        println!("cargo:rustc-link-lib={}={}", kind, lib);
+    }
 
-    // Tell cargo to tell rustc to link the system bzip2
-    // shared library.
-    println!("cargo:rustc-link-lib=tag_c");
-    println!("cargo:rustc-link-lib=tag");
+    println!("cargo:rustc-link-lib={}={}", kind, "tag_c");
+    println!("cargo:rustc-link-lib={}={}", kind, "tag");
+}
 
-    // The bindgen::Builder is the main entry point
-    // to bindgen, and lets you build up options for
-    // the resulting bindings.
-    let bindings = bindgen::Builder::default()
-        // The input header we would like to generate
-        // bindings for.
-        .header(headers_path_str)
-        // Tell cargo to invalidate the built crate whenever any of the
-        // included header files changed.
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        // Finish the builder and generate the bindings.
-        .generate()
-        // Unwrap the Result and panic on failure.
-        .expect("Unable to generate bindings");
+fn get_extra_libs() -> HashSet<String> {
+    get_env_hashset_string("TAGLIB_EXTRA_LIBS")
+}
 
-    // Write the bindings to the $OUT_DIR/bindings.rs file.
-    // let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    // bindings
-    //     .write_to_file(out_path.join("bindings.rs"))
-    //     .expect("Couldn't write bindings!");
-    // Write the bindings to the $OUT_DIR/bindings.rs file.
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap())
-        .join("bindings.rs");
-    bindings
-        .write_to_file(out_path)
-        .expect("Couldn't write bindings!");
+fn get_lib_dirs() -> Vec<PathBuf> {
+    get_env_hashset_string("TAGLIB_LIB_DIRS").into_iter()
+        .map(PathBuf::from).collect::<Vec<PathBuf>>()
+}
+
+fn get_env_hashset_string(env_key: &str) -> HashSet<String> {
+    println!("cargo:rerun-if-env-changed={}", env_key);
+    env::var(env_key)
+        .map_or_else(|_| HashSet::new(),
+                     |v| v.split(':')
+                         .map(|e| e.trim().to_owned()).collect::<HashSet<String>>())
+}
+
+fn get_link_mode() -> &'static str {
+    match &get_env_string("TAGLIB_STATIC") {
+        None => "dylib",
+        Some(v) => if v.eq("0") { "dylib" } else { "static" }
+    }
+}
+
+fn get_env_string(env_key: &str) -> Option<String> {
+    println!("cargo:rerun-if-env-changed={}", env_key);
+    env::var("OPENCC_STATIC").ok()
 }
 
 #[cfg(not(feature = "pkg-config"))]
@@ -69,48 +72,8 @@ fn build_pkgconfig() -> bool {
 
 #[cfg(feature = "pkg-config")]
 fn build_pkgconfig() -> bool {
-    let library = pkg_config::probe_library("taglib_c").expect("probe error");
-
-    let headers_path_str = library.include_paths.iter()
-        .map(|p| p.join("tag_c.h"))
-        .map(|e| e.canonicalize())
-        .filter(|e| e.is_ok())
-        .map(|e| e.unwrap())
-        .filter(|e| e.exists())
-        .nth(0).expect("Not found header file")
-        .to_str().expect("header file name contains illegal character.")
-        .to_string();
-
-    let libdir_path = library.link_paths.iter()
-        .map(|e| e.canonicalize())
-        .filter(|e| e.is_ok())
-        .map(|e| e.unwrap())
-        .filter(|e| e.exists())
-        .nth(0).expect("Not found library path")
-        .to_str().expect("library path name contains illegal character.")
-        .to_string();
-    println!("cargo:rustc-link-search={}", &libdir_path);
-
-    println!("cargo:rustc-link-lib=tag_c");
-    println!("cargo:rustc-link-lib=tag");
-
-    let bindings = bindgen::Builder::default()
-        // The input header we would like to generate
-        // bindings for.
-        .header(&headers_path_str)
-        // Tell cargo to invalidate the built crate whenever any of the
-        // included header files changed.
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
-        // Finish the builder and generate the bindings.
-        .generate()
-        // Unwrap the Result and panic on failure.
-        .expect("Unable to generate bindings");
-
-    let out_path = PathBuf::from(env::var("OUT_DIR").unwrap())
-        .join("bindings.rs");
-    bindings
-        .write_to_file(out_path)
-        .expect("Couldn't write bindings!");
-
+    if pkg_config::find_library("taglib_c").is_err() {
+        panic!("Could not find taglib_c via pkgconfig");
+    }
     true
 }

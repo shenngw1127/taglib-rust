@@ -36,6 +36,7 @@ use std::str::Utf8Error;
 use lazy_static::lazy_static;
 
 use sys as ll;
+use sys::taglib_tag_free_strings;
 
 fn c_str_to_str(c_str: *const c_char) -> Option<String> {
     if c_str.is_null() {
@@ -43,7 +44,15 @@ fn c_str_to_str(c_str: *const c_char) -> Option<String> {
     } else {
         let bytes = unsafe { CStr::from_ptr(c_str).to_bytes() };
 
-        if bytes.is_empty() { None } else { Some(String::from_utf8_lossy(bytes).to_string()) }
+        let res = if bytes.is_empty() {
+            None
+        } else {
+            Some(String::from_utf8_lossy(bytes).to_string())
+        };
+
+        unsafe { taglib_tag_free_strings(); }
+
+        res
     }
 }
 
@@ -233,45 +242,45 @@ impl<'a> AudioProperties<'a> {
 #[derive(Copy, Clone, PartialEq)]
 pub enum FileType {
     /// MPEG file
-    MPEG = ll::TagLib_File_Type_TagLib_File_MPEG as isize,
+    MPEG = ll::TAGLIB_FILE_MPEG as isize,
     /// Ogg/Vorbis file
-    OggVorbis = ll::TagLib_File_Type_TagLib_File_OggVorbis as isize,
+    OggVorbis = ll::TAGLIB_FILE_OGG_VORBIS as isize,
     /// FLAC file
-    FLAC = ll::TagLib_File_Type_TagLib_File_FLAC as isize,
+    FLAC = ll::TAGLIB_FILE_FLAC as isize,
     /// MPC file
-    MPC = ll::TagLib_File_Type_TagLib_File_MPC as isize,
+    MPC = ll::TAGLIB_FILE_MPC as isize,
     /// Ogg/FLAC file
-    OggFlac = ll::TagLib_File_Type_TagLib_File_OggFlac as isize,
+    OggFlac = ll::TAGLIB_FILE_OGG_FLAC as isize,
     /// WavPack file
-    WavPack = ll::TagLib_File_Type_TagLib_File_WavPack as isize,
+    WavPack = ll::TAGLIB_FILE_WAV_PACK as isize,
     /// Ogg/Speex file
-    Speex = ll::TagLib_File_Type_TagLib_File_Speex as isize,
+    Speex = ll::TAGLIB_FILE_SPEEX as isize,
     /// TrueAudio file
-    TrueAudio = ll::TagLib_File_Type_TagLib_File_TrueAudio as isize,
+    TrueAudio = ll::TAGLIB_FILE_TRUE_AUDIO as isize,
     /// MP4 file
-    MP4 = ll::TagLib_File_Type_TagLib_File_MP4 as isize,
+    MP4 = ll::TAGLIB_FILE_MP4 as isize,
     /// ASF file
-    ASF = ll::TagLib_File_Type_TagLib_File_ASF as isize,
+    ASF = ll::TAGLIB_FILE_ASF as isize,
     /// AIFF file
-    AIFF = ll::TagLib_File_Type_TagLib_File_AIFF as isize,
+    AIFF = ll::TAGLIB_FILE_AIFF as isize,
     /// WAV file
-    WAV = ll::TagLib_File_Type_TagLib_File_WAV as isize,
+    WAV = ll::TAGLIB_FILE_WAV as isize,
     /// APE file
-    APE = ll::TagLib_File_Type_TagLib_File_APE as isize,
+    APE = ll::TAGLIB_FILE_APE as isize,
     /// IT file
-    IT = ll::TagLib_File_Type_TagLib_File_IT as isize,
+    IT = ll::TAGLIB_FILE_IT as isize,
     /// MOD file
-    MOD = ll::TagLib_File_Type_TagLib_File_Mod as isize,
+    MOD = ll::TAGLIB_FILE_MOD as isize,
     /// S3M file
-    S3M = ll::TagLib_File_Type_TagLib_File_S3M as isize,
+    S3M = ll::TAGLIB_FILE_S3M as isize,
     /// XM file
-    XM = ll::TagLib_File_Type_TagLib_File_XM as isize,
+    XM = ll::TAGLIB_FILE_XM as isize,
     /// OPUS file
-    OPUS = ll::TagLib_File_Type_TagLib_File_Opus as isize,
+    OPUS = ll::TAGLIB_FILE_OPUS as isize,
     /// DSF file
-    DSF = ll::TagLib_File_Type_TagLib_File_DSF as isize,
+    DSF = ll::TAGLIB_FILE_DSF as isize,
     /// DSDIFF file
-    DFF = ll::TagLib_File_Type_TagLib_File_DSDIFF as isize,
+    DFF = ll::TAGLIB_FILE_DSDIFF as isize,
 }
 
 lazy_static! {
