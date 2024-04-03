@@ -27,6 +27,8 @@ extern crate taglib_sys as sys;
 
 #[cfg(target_os = "windows")]
 extern crate windows_sys as windows;
+
+#[cfg(target_os = "windows")]
 extern crate codepage;
 
 use std::cmp::max;
@@ -491,7 +493,7 @@ fn acp_encode(s: &str) -> Option<Vec<u8>> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn a(s: &str) -> Option<Vec<u8>> {
+fn acp_encode(_s: &str) -> Option<Vec<u8>> {
     None
 }
 
