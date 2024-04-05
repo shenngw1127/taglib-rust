@@ -31,19 +31,17 @@ extern crate windows_sys as windows;
 #[cfg(target_os = "windows")]
 extern crate codepage;
 
+use lazy_static::lazy_static;
+use libc::c_char;
 use std::cmp::max;
-use libc::{c_char, c_uint};
 use std::collections::HashSet;
 use std::convert::TryInto;
 use std::ffi::{CString, CStr};
 use std::path::Path;
-use std::ptr;
-use std::slice::from_raw_parts;
+use std::{mem, ptr};
 use std::str::Utf8Error;
-use lazy_static::lazy_static;
 
 use sys as ll;
-use sys::taglib_tag_free_strings;
 
 fn c_str_to_str(c_str: *const c_char) -> Option<String> {
     if c_str.is_null() {
@@ -57,7 +55,7 @@ fn c_str_to_str(c_str: *const c_char) -> Option<String> {
             Some(String::from_utf8_lossy(bytes).to_string())
         };
 
-        unsafe { taglib_tag_free_strings(); }
+        unsafe { ll::taglib_tag_free_strings(); }
 
         res
     }
@@ -245,6 +243,8 @@ impl<'a> AudioProperties<'a> {
         unsafe { ll::taglib_audioproperties_channels(self.raw) as u32 }
     }
 }
+
+const MUT_PTR_C_CHAR_LEN: usize = mem::size_of::<*mut c_char>();
 
 #[derive(Copy, Clone, PartialEq)]
 pub enum FileType {
@@ -520,12 +520,15 @@ impl File {
 
     /// Creates a new `taglib::File` for the given `filename` and type of file.
     pub fn new_type(filename: &str, filetype: FileType) -> Result<File, FileError> {
-        let filename_c = match CString::new(filename) {
-            Ok(s) => s,
-            _ => return Err(FileError::InvalidFileName),
-        };
-
+        let filename_c = acp_encode(filename)
+            .map_or_else(|| CString::new(filename),
+                         |v| {
+                             let from_vec = unsafe { CString::from_vec_unchecked(v) };
+                             Ok(from_vec)
+                         })
+            .map_err(|_| FileError::InvalidFileName)?;
         let filename_c_ptr = filename_c.as_ptr();
+
         let f = unsafe {
             ll::taglib_file_new_type(filename_c_ptr, (filetype as u32).try_into().unwrap())
         };
@@ -781,16 +784,16 @@ impl File {
         let cs = CString::new(key).unwrap();
         let s = cs.as_ptr();
         let call_res = unsafe {
-            ll::taglib_property_get_strings(self.raw, s)
+            ll::taglib_property_get(self.raw, s)
         };
-        c_char_to_vec_string_free(call_res.value, call_res.len)
+        c_char_to_vec_string_free(call_res)
     }
 
     pub fn keys(&self) -> Result<Vec<String>, Utf8Error> {
         let call_res = unsafe {
-            ll::taglib_property_keys_strings(self.raw)
+            ll::taglib_property_keys(self.raw)
         };
-        c_char_to_vec_string_free(call_res.value, call_res.len)
+        c_char_to_vec_string_free(call_res)
     }
 
     pub fn set_property(&mut self, key: &str, value: &str) {
@@ -829,26 +832,28 @@ impl File {
     }
 }
 
-fn c_char_to_vec_string_free(ptr: *mut *mut c_char,
-                             len: c_uint) -> Result<Vec<String>, Utf8Error> {
+fn c_char_to_vec_string_free(ptr: *mut *mut c_char) -> Result<Vec<String>, Utf8Error> {
     if ptr.is_null() {
         Ok(Vec::new())
     } else {
         unsafe {
-            let res = convert_double_pointer_to_vec(ptr, len);
+            let res = convert_double_pointer_to_vec(ptr);
             ll::taglib_property_free(ptr);
             res
         }
     }
 }
 
-unsafe fn convert_double_pointer_to_vec(data: *mut *mut c_char,
-                                        len: c_uint) -> Result<Vec<String>, Utf8Error> {
-    from_raw_parts(data, len as usize).iter()
-        .map(|arg| {
-            CStr::from_ptr(*arg).to_str().map(ToString::to_string)
-        })
-        .collect()
+unsafe fn convert_double_pointer_to_vec(data: *mut *mut c_char) -> Result<Vec<String>, Utf8Error> {
+    let mut p = data;
+    let mut res: Vec<String> = vec![];
+    while p.as_ref().unwrap().as_ref().is_some() {
+        let ele = CStr::from_ptr(p.as_ref().unwrap().as_ref().unwrap())
+            .to_str().map(ToString::to_string)?;
+        res.push(ele);
+        p = p.byte_offset(MUT_PTR_C_CHAR_LEN as isize);
+    }
+    Ok(res)
 }
 
 fn decimal_to_padding_string(decimal: u32, padding: usize) -> String {

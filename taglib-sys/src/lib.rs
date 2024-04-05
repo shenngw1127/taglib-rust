@@ -53,13 +53,6 @@ pub const TAGLIB_FILE_DSF: TagLib_FileType = 18;
 pub const TAGLIB_FILE_DSDIFF: TagLib_FileType = 19;
 
 // tag_c.h
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct TagLib_Strings {
-    pub len: c_uint,
-    pub value: *mut *mut c_char,
-}
-
 extern "C" {
     pub fn taglib_file_new(filename: *const c_char) -> *mut TagLib_File;
     pub fn taglib_file_new_type(
@@ -88,16 +81,16 @@ extern "C" {
     pub fn taglib_tag_set_track(tag: *mut TagLib_Tag, track: c_uint);
     pub fn taglib_tag_free_strings();
 
-    #[doc = " Get the keys of the property map.\n\n It same as taglib_property_keys, \
-    but the return value with lenth, for Rust convert it to UTF8 String.\n \
+    #[doc = " Get the keys of the property map.\n\n \
+    \\return NULL terminated array of C-strings (char *), only NULL if empty.\n \
     It must be freed by the client using taglib_property_free()."]
-    pub fn taglib_property_keys_strings(file: *const TagLib_File) -> TagLib_Strings;
+    pub fn taglib_property_keys(file: *const TagLib_File) -> *mut *mut ::std::os::raw::c_char;
 
-    #[doc = " Get value(s) of property \\a prop.\n\n It same as taglib_property_get, \
-    but the return value with lenth, for Rust convert it to UTF8 String.\n \
+    #[doc = " Get value(s) of property \\a prop.\n\n \
+    \\return NULL terminated array of C-strings (char *), only NULL if empty.\n \
     It must be freed by the client using taglib_property_free()."]
-    pub fn taglib_property_get_strings(file: *const TagLib_File,
-                                       prop: *const c_char) -> TagLib_Strings;
+    pub fn taglib_property_get(file: *const TagLib_File,
+                               prop: *const c_char, ) -> *mut *mut c_char;
 
     #[doc = " Sets the property \\a prop with \\a value. \
     Use \\a value = NULL to remove\n the property, otherwise it will be replaced."]
@@ -110,6 +103,7 @@ extern "C" {
     pub fn taglib_property_set_append(file: *mut TagLib_File,
                                       prop: *const c_char,
                                       value: *const c_char);
+
     #[doc = " Frees the NULL terminated array \\a props and the C-strings it contains."]
     pub fn taglib_property_free(props: *mut *mut c_char);
 
