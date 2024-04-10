@@ -6,11 +6,15 @@ use std::collections::HashSet;
 use std::env;
 use std::path::PathBuf;
 
-//是否静态编译，默认否
+const KEY_TAGLIB_STATIC: &'static str = "TAGLIB_STATIC";
+const KEY_TAGLIB_DIRS: &'static str = "TAGLIB_LIB_DIRS";
+const KEY_TAGLIB_EXTRA_LIBS: &'static str = "TAGLIB_EXTRA_LIBS";
+
+// if not empty and not zero, build as static link, default is dynamic link (dll/so/dylib), example:
 // TAGLIB_STATIC=1
-// 多个用半角冒号`:`分隔，Windows下用半角分号`;`分隔，示例
+// multiple dir separated by char `:` in Unix/Linux/Mac, ';' in Windows, example:
 // TAGLIB_LIB_DIRS=/others/lib:/opt/usr/local/lib
-// 多个用半角冒号`:`分隔，标准的`tag_c`和`tag`无需指定，示例
+// multiple name separated by char `:`, example:
 // TAGLIB_EXTRA_LIBS=zlib
 fn main() {
     if !build_pkgconfig() {
@@ -40,7 +44,7 @@ fn build_env() {
 }
 
 fn get_extra_libs() -> HashSet<String> {
-    get_env_hashset_string("TAGLIB_EXTRA_LIBS", ':')
+    get_env_hashset_string(KEY_TAGLIB_EXTRA_LIBS, ':')
 }
 
 fn get_sep() -> char {
@@ -57,7 +61,7 @@ fn get_sep() -> char {
 }
 
 fn get_lib_dirs(sep: char) -> Vec<PathBuf> {
-    get_env_hashset_string("TAGLIB_LIB_DIRS", sep).into_iter()
+    get_env_hashset_string(KEY_TAGLIB_DIRS, sep).into_iter()
         .map(PathBuf::from).collect::<Vec<PathBuf>>()
 }
 
@@ -70,7 +74,7 @@ fn get_env_hashset_string(env_key: &str, sep: char) -> HashSet<String> {
 }
 
 fn get_link_mode() -> &'static str {
-    match &get_env_string("TAGLIB_STATIC") {
+    match &get_env_string(KEY_TAGLIB_STATIC) {
         None => "dylib",
         Some(v) => if v.eq("0") { "dylib" } else { "static" }
     }
@@ -78,7 +82,7 @@ fn get_link_mode() -> &'static str {
 
 fn get_env_string(env_key: &str) -> Option<String> {
     println!("cargo:rerun-if-env-changed={}", env_key);
-    env::var("OPENCC_STATIC").ok()
+    env::var(KEY_TAGLIB_STATIC).ok()
 }
 
 #[cfg(not(feature = "pkg-config"))]
