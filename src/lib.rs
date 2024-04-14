@@ -669,8 +669,20 @@ impl File {
         unsafe {
             ll::taglib_tag_set_track(t.raw, value);
         }
-        let (_, track_total, _) = self.option_u32_pair_by_id(KEY_TRACK_NUMBER);
-        self.set_property_split_by_slash(KEY_TRACK_NUMBER, Some(value), track_total, padding);
+
+        if let Some(track_total_string) = self.get_first_property(KEY_TRACK_TOTAL) {
+            if let Some(track_total) = track_total_string.parse::<u32>().ok() {
+                self.set_property_split_by_slash(KEY_TRACK_NUMBER, Some(value),
+                                                 Some(track_total),
+                                                 padding)
+            } else {
+                let (_, track_total, _) = self.option_u32_pair_by_id(KEY_TRACK_NUMBER);
+                self.set_property_split_by_slash(KEY_TRACK_NUMBER, Some(value), track_total, padding);
+            }
+        } else {
+            let (_, track_total, _) = self.option_u32_pair_by_id(KEY_TRACK_NUMBER);
+            self.set_property_split_by_slash(KEY_TRACK_NUMBER, Some(value), track_total, padding);
+        }
     }
 
     pub fn remove_track_number(&mut self) {
