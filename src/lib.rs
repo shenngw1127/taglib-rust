@@ -33,7 +33,6 @@ extern crate codepage;
 
 use lazy_static::lazy_static;
 use libc::c_char;
-use std::cmp::max;
 use std::collections::HashSet;
 use std::convert::TryInto;
 use std::ffi::{CString, CStr};
@@ -49,15 +48,7 @@ fn c_str_to_str(c_str: *const c_char) -> Option<String> {
     } else {
         let bytes = unsafe { CStr::from_ptr(c_str).to_bytes() };
 
-        let res = if bytes.is_empty() {
-            None
-        } else {
-            Some(String::from_utf8_lossy(bytes).to_string())
-        };
-
-        unsafe { ll::taglib_tag_free_strings(); }
-
-        res
+        if bytes.is_empty() { None } else { Some(String::from_utf8_lossy(bytes).to_string()) }
     }
 }
 
@@ -517,17 +508,21 @@ fn acp_encode(_s: &str) -> Option<Vec<u8>> {
     None
 }
 
+fn get_filename_c(filename: &str) -> Result<CString, FileError> {
+    acp_encode(filename)
+        .map_or_else(|| CString::new(filename),
+                     |v| {
+                         let from_vec = unsafe { CString::from_vec_unchecked(v) };
+                         Ok(from_vec)
+                     })
+        .map_err(|_| FileError::InvalidFileName)
+}
+
 impl File {
     /// Creates a new `taglib::File` for the given `filename`.
     pub fn new<P: AsRef<Path>>(path: P) -> Result<File, FileError> {
         let filename = path.as_ref().to_str().ok_or(FileError::InvalidFileName)?;
-        let filename_c = acp_encode(filename)
-            .map_or_else(|| CString::new(filename),
-                         |v| {
-                             let from_vec = unsafe { CString::from_vec_unchecked(v) };
-                             Ok(from_vec)
-                         })
-            .map_err(|_| FileError::InvalidFileName)?;
+        let filename_c = get_filename_c(filename)?;
         let filename_c_ptr = filename_c.as_ptr();
 
         let f = unsafe { ll::taglib_file_new(filename_c_ptr) };
@@ -540,13 +535,7 @@ impl File {
 
     /// Creates a new `taglib::File` for the given `filename` and type of file.
     pub fn new_type(filename: &str, filetype: FileType) -> Result<File, FileError> {
-        let filename_c = acp_encode(filename)
-            .map_or_else(|| CString::new(filename),
-                         |v| {
-                             let from_vec = unsafe { CString::from_vec_unchecked(v) };
-                             Ok(from_vec)
-                         })
-            .map_err(|_| FileError::InvalidFileName)?;
+        let filename_c = get_filename_c(filename)?;
         let filename_c_ptr = filename_c.as_ptr();
 
         let f = unsafe {
@@ -646,22 +635,16 @@ impl File {
 
     pub fn track_number_string(&self) -> Option<String> {
         if let Some(track) = self.tag().unwrap().track() {
-            if let Some((track_string, _, _)) = self.text_pair_by_id(KEY_TRACK_NUMBER) {
-                if let Some(track_in_prop) = track_string.parse::<u32>().ok() {
-                    if track_in_prop == track {
-                        Some(track_string)
-                    } else {
-                        Some(track.to_string())
+            if let Some(track_string_from_prop) = self.track_number_string_from_prop() {
+                if let Some(track_from_prop) = track_string_from_prop.parse::<u32>().ok() {
+                    if track_from_prop == track {
+                        return Some(track_string_from_prop);
                     }
-                } else {
-                    Some(track.to_string())
                 }
-            } else {
-                Some(track.to_string())
             }
-        } else {
-            None
+            return Some(track.to_string());
         }
+        None
     }
 
     pub fn set_track_number(&mut self, value: u32, padding: usize) {
@@ -674,17 +657,19 @@ impl File {
             if let Some(track_total) = track_total_string.parse::<u32>().ok() {
                 self.set_property(KEY_TRACK_TOTAL,
                                   &decimal_to_padding_string(track_total, padding));
-                self.set_property_split_by_slash(KEY_TRACK_NUMBER, Some(value),
-                                                 Some(track_total),
-                                                 padding)
-            } else {
-                let (_, track_total, _) = self.option_u32_pair_by_id(KEY_TRACK_NUMBER);
-                self.set_property_split_by_slash(KEY_TRACK_NUMBER, Some(value), track_total, padding);
+                self.set_property_split_num(KEY_TRACK_NUMBER,
+                                            &Some(value),
+                                            &Some(track_total),
+                                            padding);
+                return;
             }
-        } else {
-            let (_, track_total, _) = self.option_u32_pair_by_id(KEY_TRACK_NUMBER);
-            self.set_property_split_by_slash(KEY_TRACK_NUMBER, Some(value), track_total, padding);
         }
+
+        let track_total = self.track_total_from_prop_track_number();
+        if let Some(t) = track_total {
+            self.set_property(KEY_TRACK_TOTAL, &decimal_to_padding_string(t, padding));
+        }
+        self.set_property_split_num(KEY_TRACK_NUMBER, &Some(value), &track_total, padding);
     }
 
     pub fn remove_track_number(&mut self) {
@@ -692,52 +677,38 @@ impl File {
         unsafe {
             ll::taglib_tag_set_track(t.raw, 0);
         }
-        let (x, y, len) = self.option_u32_pair_by_id(KEY_TRACK_NUMBER);
-        if x.is_some() {
-            self.set_property_split_by_slash(KEY_TRACK_NUMBER, None, y, len);
+
+        let (track_number, track_total) =
+            self.text_pair_by_key(KEY_TRACK_NUMBER);
+        if track_number.is_some() {
+            self.set_property_split_text(KEY_TRACK_NUMBER, &None, &track_total);
         }
     }
 
     pub fn track_total(&self) -> Option<u32> {
-        if let Some(track_total) = self.get_first_property(KEY_TRACK_TOTAL) {
-            track_total.parse::<u32>()
-                .map_or_else(|_| self.track_total_from_prop_track_number(),
-                             |t| Some(t))
-        } else {
-            self.track_total_from_prop_track_number()
+        if let Some(track_total_string) = self.get_first_property(KEY_TRACK_TOTAL) {
+            let track_total = track_total_string.parse::<u32>().ok();
+            if track_total.is_some() {
+                return track_total;
+            }
         }
-    }
-
-    fn track_total_from_prop_track_number(&self) -> Option<u32> {
-        match self.number_pair_by_id(KEY_TRACK_NUMBER) {
-            None => None,
-            Some((_, None, _)) => None,
-            Some((_, Some(b), _)) => Some(b),
-        }
+        self.track_total_from_prop_track_number()
     }
 
     pub fn track_total_string(&self) -> Option<String> {
-        let res = self.get_first_property(KEY_TRACK_TOTAL);
-        if res.is_some() {
-            res
+        let track_total = self.get_first_property(KEY_TRACK_TOTAL);
+        if track_total.is_some() {
+            track_total
         } else {
             self.track_total_string_from_prop_track_number()
-        }
-    }
-
-    fn track_total_string_from_prop_track_number(&self) -> Option<String> {
-        match self.text_pair_by_id(KEY_TRACK_NUMBER) {
-            None => None,
-            Some((_, None, _)) => None,
-            Some((_, Some(b), _)) => Some(b),
         }
     }
 
     pub fn set_track_total(&mut self, value: u32, padding: usize) {
         self.set_property(KEY_TRACK_TOTAL, &decimal_to_padding_string(value, padding));
 
-        let (track_number, _, _) = self.option_u32_pair_by_id(KEY_TRACK_NUMBER);
-        self.set_property_split_by_slash(KEY_TRACK_NUMBER, track_number, Some(value), padding);
+        let track_number = self.track_number_from_prop();
+        self.set_property_split_num(KEY_TRACK_NUMBER, &track_number, &Some(value), padding);
     }
 
     pub fn remove_track_total(&mut self) {
@@ -745,146 +716,114 @@ impl File {
             self.remove_property(KEY_TRACK_TOTAL);
         }
 
-        let (x, y, len) = self.option_u32_pair_by_id(KEY_TRACK_NUMBER);
-        if y.is_some() {
-            self.set_property_split_by_slash(KEY_TRACK_NUMBER, x, None, len);
+        let (track_number, track_total) =
+            self.text_pair_by_key(KEY_TRACK_NUMBER);
+        if track_total.is_some() {
+            self.set_property_split_text(KEY_TRACK_NUMBER, &track_number, &None);
         }
+    }
+
+    fn track_number_from_prop(&mut self) -> Option<u32> {
+        let (track_number, _) = self.number_pair_by_key(KEY_TRACK_NUMBER);
+        track_number
+    }
+
+    fn track_number_string_from_prop(&self) -> Option<String> {
+        let (track_number, _) = self.text_pair_by_key(KEY_TRACK_NUMBER);
+        track_number
+    }
+
+    fn track_total_from_prop_track_number(&self) -> Option<u32> {
+        let (_, track_total) = self.number_pair_by_key(KEY_TRACK_NUMBER);
+        track_total
+    }
+
+    fn track_total_string_from_prop_track_number(&self) -> Option<String> {
+        let (_, track_total) = self.text_pair_by_key(KEY_TRACK_NUMBER);
+        track_total
     }
 
     pub fn disc_number(&self) -> Option<u32> {
-        match self.number_pair_by_id(KEY_DISC_NUMBER) {
-            None => None,
-            Some((a, _, _)) => Some(a),
-        }
+        let (disc_number, _) = self.number_pair_by_key(KEY_DISC_NUMBER);
+        disc_number
     }
 
     pub fn disc_number_string(&self) -> Option<String> {
-        match self.text_pair_by_id(KEY_DISC_NUMBER) {
-            None => None,
-            Some((a, _, _)) => Some(a),
-        }
+        let (disc_number, _) = self.text_pair_by_key(KEY_DISC_NUMBER);
+        disc_number
     }
 
     pub fn set_disc_number(&mut self, value: u32, padding: usize) {
-        let (_, y, _) = self.option_u32_pair_by_id(KEY_DISC_NUMBER);
-        self.set_property_split_by_slash(KEY_DISC_NUMBER, Some(value), y, padding);
+        let disc_total = self.disc_total();
+        self.set_property_split_num(KEY_DISC_NUMBER, &Some(value), &disc_total, padding);
     }
 
     pub fn remove_disc_number(&mut self) {
-        let (x, y, len) = self.option_u32_pair_by_id(KEY_DISC_NUMBER);
-        if x.is_some() {
-            self.set_property_split_by_slash(KEY_DISC_NUMBER, None, y, len);
+        let (disc_number, disc_total) =
+            self.text_pair_by_key(KEY_DISC_NUMBER);
+        if disc_number.is_some() {
+            self.set_property_split_text(KEY_DISC_NUMBER, &None, &disc_total);
         }
     }
 
     pub fn disc_total(&self) -> Option<u32> {
-        match self.number_pair_by_id(KEY_DISC_NUMBER) {
-            None => None,
-            Some((_, None, _)) => None,
-            Some((_, Some(b), _)) => Some(b),
-        }
+        let (_, disc_total) = self.number_pair_by_key(KEY_DISC_NUMBER);
+        disc_total
     }
 
     pub fn disc_total_string(&self) -> Option<String> {
-        match self.text_pair_by_id(KEY_DISC_NUMBER) {
-            None => None,
-            Some((_, None, _)) => None,
-            Some((_, Some(b), _)) => Some(b),
-        }
+        let (_, disc_total) = self.text_pair_by_key(KEY_DISC_NUMBER);
+        disc_total
     }
 
     pub fn set_disc_total(&mut self, total_disc: u32, padding: usize) {
-        let (x, _, _) = self.option_u32_pair_by_id(KEY_DISC_NUMBER);
-        self.set_property_split_by_slash(KEY_DISC_NUMBER, x, Some(total_disc), padding);
+        let disc_number = self.disc_number();
+        self.set_property_split_num(KEY_DISC_NUMBER, &disc_number, &Some(total_disc), padding);
     }
 
     pub fn remove_disc_total(&mut self) {
-        let (x, y, len) = self.option_u32_pair_by_id(KEY_DISC_NUMBER);
-        if y.is_some() {
-            self.set_property_split_by_slash(KEY_DISC_NUMBER, x, None, len);
+        let (disc_number, disc_total) =
+            self.text_pair_by_key(KEY_DISC_NUMBER);
+        if disc_total.is_some() {
+            self.set_property_split_text(KEY_DISC_NUMBER, &disc_number, &None);
         }
     }
 
-    fn set_property_split_by_slash(&mut self,
-                                   key: &str,
-                                   first: Option<u32>,
-                                   last: Option<u32>,
-                                   padding: usize) {
-        let new_value = Self::pair_to_string(first, last, padding);
+    fn set_property_split_text(&mut self,
+                               key: &str,
+                               first: &Option<String>,
+                               last: &Option<String>) {
         self.remove_property(key);
-        match new_value {
-            None => (),
-            Some(ref x) => self.set_property(key, &x),
+        if let Some(ref value) = text_pair_to_string(first, last) {
+            self.set_property(key, value);
         }
     }
 
-    fn pair_to_string(first: Option<u32>, last: Option<u32>, padding: usize) -> Option<String> {
-        match (first, last) {
-            (None, None) => None,
-            (None, Some(y)) => Some("/".to_owned() + &decimal_to_padding_string(y, padding)),
-            (Some(x), None) => Some(decimal_to_padding_string(x, padding)),
-            (Some(x), Some(y)) => {
-                Some(decimal_to_padding_string(x, padding) + "/"
-                    + &decimal_to_padding_string(y, padding))
-            }
+    fn set_property_split_num(&mut self,
+                              key: &str,
+                              first: &Option<u32>,
+                              last: &Option<u32>,
+                              padding: usize) {
+        self.remove_property(key);
+        if let Some(ref value) = num_pair_to_string(first, last, padding) {
+            self.set_property(key, value);
         }
     }
 
-    fn number_pair_by_id(&self, id: &str) -> Option<(u32, Option<u32>, usize)> {
-        match self.get_first_property(id) {
-            None => None,
-            Some(ref text) => {
-                self.number_pair(text)
-            }
+    fn number_pair_by_key(&self, key: &str) -> (Option<u32>, Option<u32>) {
+        if let Some(ref text) = self.get_first_property(key) {
+            get_number_pair(text)
+        } else {
+            (None, None)
         }
     }
 
-    fn number_pair(&self, text: &str) -> Option<(u32, Option<u32>, usize)> {
-        let mut split = text.split('/');
-        let a_str = split.next()?.trim();
-        let a_len = a_str.len();
-        let a = a_str.parse().ok()?;
-        let mut b_len = 0usize;
-        let b = split.next()
-            .and_then(|s| {
-                let s = s.trim();
-                b_len = s.len();
-                s.parse().ok()
-            });
-        Some((a, b, max(a_len, b_len)))
-    }
-
-    fn text_pair_by_id(&self, id: &str) -> Option<(String, Option<String>, usize)> {
-        match self.get_first_property(id) {
-            None => None,
-            Some(ref text) => {
-                self.text_pair(text)
-            }
+    fn text_pair_by_key(&self, key: &str) -> (Option<String>, Option<String>) {
+        if let Some(ref text) = self.get_first_property(key) {
+            get_text_pair(text)
+        } else {
+            (None, None)
         }
-    }
-
-    fn text_pair(&self, text: &str) -> Option<(String, Option<String>, usize)> {
-        let mut split = text.split('/');
-        let a_str = split.next()?.trim();
-        let a_len = a_str.len();
-        let a = a_str.to_owned();
-        let mut b_len = 0usize;
-        let b = split.next()
-            .and_then(|s| {
-                let s = s.trim();
-                b_len = s.len();
-                Some(s.to_owned())
-            });
-        Some((a, b, max(a_len, b_len)))
-    }
-
-    fn option_u32_pair_by_id(&mut self, key: &str) -> (Option<u32>, Option<u32>, usize) {
-        let (x, y, len) = match self.number_pair_by_id(key) {
-            None => (None, None, 0),
-            Some((a, None, len)) => (Some(a), None, len),
-            Some((a, Some(b), len)) => (Some(a), Some(b), len),
-        };
-        (x, y, len)
     }
 
     pub fn get_first_property(&self, key: &str) -> Option<String> {
@@ -948,6 +887,61 @@ impl File {
     }
 }
 
+fn text_pair_to_string(first: &Option<String>, last: &Option<String>) -> Option<String> {
+    match (first, last) {
+        (None, None) => None,
+        (None, Some(b)) => Some("/".to_owned() + b),
+        (Some(a), None) => Some(a.to_owned()),
+        (Some(a), Some(b)) => Some(a.to_owned() + "/" + b),
+    }
+}
+
+fn num_pair_to_string(first: &Option<u32>,
+                      second: &Option<u32>,
+                      padding: usize) -> Option<String> {
+    match (first, second) {
+        (None, None) => None,
+        (None, Some(b)) => Some("/".to_owned() + &decimal_to_padding_string(*b, padding)),
+        (Some(a), None) => Some(decimal_to_padding_string(*a, padding)),
+        (Some(a), Some(b)) => {
+            Some(decimal_to_padding_string(*a, padding) + "/"
+                + &decimal_to_padding_string(*b, padding))
+        }
+    }
+}
+
+fn get_text_pair(text: &str) -> (Option<String>, Option<String>) {
+    let mut split = text.split('/');
+    let first = get_text(&split.next());
+    let second = get_text(&split.next());
+    (first, second)
+}
+
+fn get_text(input: &Option<&str>) -> Option<String> {
+    if let Some(string) = input {
+        let string = string.trim();
+        if !string.is_empty() {
+            return Some(string.to_owned());
+        }
+    }
+    None
+}
+
+fn get_number_pair(text: &str) -> (Option<u32>, Option<u32>) {
+    let mut split = text.split('/');
+    let first = get_num(&split.next());
+    let second = get_num(&split.next());
+    (first, second)
+}
+
+fn get_num(input: &Option<&str>) -> Option<u32> {
+    if let Some(string) = input {
+        string.trim().parse::<u32>().ok()
+    } else {
+        None
+    }
+}
+
 fn c_char_to_vec_string_free(ptr: *mut *mut c_char) -> Result<Vec<String>, Utf8Error> {
     if ptr.is_null() {
         Ok(Vec::new())
@@ -986,6 +980,40 @@ mod test {
     use super::*;
     use std::fs;
     use std::path::PathBuf;
+
+    #[test]
+    fn test_get_number_pair() {
+        assert_eq!(get_number_pair(""), (None, None));
+        assert_eq!(get_number_pair("/"), (None, None));
+        assert_eq!(get_number_pair(" /  "), (None, None));
+
+        assert_eq!(get_number_pair("2"), (Some(2), None));
+        assert_eq!(get_number_pair("02"), (Some(2), None));
+        assert_eq!(get_number_pair(" 2 "), (Some(2), None));
+        assert_eq!(get_number_pair("12"), (Some(12), None));
+
+        assert_eq!(get_number_pair("/15"), (None, Some(15)));
+        assert_eq!(get_number_pair(" /15"), (None, Some(15)));
+
+        assert_eq!(get_number_pair("02/15"), (Some(2), Some(15)));
+    }
+
+    #[test]
+    fn test_get_text_pair() {
+        assert_eq!(get_text_pair(""), (None, None));
+        assert_eq!(get_text_pair("/"), (None, None));
+        assert_eq!(get_text_pair(" /  "), (None, None));
+
+        assert_eq!(get_text_pair("2"), (Some("2".to_owned()), None));
+        assert_eq!(get_text_pair("02"), (Some("02".to_owned()), None));
+        assert_eq!(get_text_pair(" 2 "), (Some("2".to_owned()), None));
+        assert_eq!(get_text_pair("12"), (Some("12".to_owned()), None));
+
+        assert_eq!(get_text_pair("/15"), (None, Some("15".to_owned())));
+        assert_eq!(get_text_pair(" /15"), (None, Some("15".to_owned())));
+
+        assert_eq!(get_text_pair("02/15"), (Some("02".to_owned()), Some("15".to_owned())));
+    }
 
     #[test]
     fn test_get_tag() {
